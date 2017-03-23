@@ -1,0 +1,298 @@
+#include <Encoder.h>
+
+//user parameters
+float accelerationSettingFloat = 0.00005; //acceleration in counts per milli per milli
+long countsPerRevLong = 32L; //the number of encoder ticks, or counts, per full revolution of the disc
+long countsUntilMaxThrottleLong = 16L; //throttle is at maximum at this distance from target count
+float inchesOfTravelPerSecondMaxFloat = 0.5; //inches of actual travel, after accounting for pulleys etc.
+float inchesOfTravelPerSecondMinFloat = 0.01; //inches of actual travel, after accounting for pulleys etc.
+byte pulleyDividerByte = 4; //the ration of inches at the winch to inches of actual travel
+long throttleMaxLong = 200L; //max throttle setting
+long throttleMinLong = 16L; //min throttle setting
+float winchDiameterFloat = 1.0; //diameter in inches of the winch pulley thing
+
+//arduino pins setup
+byte enc1PinAByte = 40;
+byte enc1PinBByte = 44;
+byte motor1DirectionPinByte = 36;
+byte motor1PWMPinByte = 2;
+
+//declare and initialize internal variables
+boolean cancelLoop0Boolean = false;
+long countCurrent0Long = 0L;
+long countDestination0Long = 0L;
+long countInitial0Long = 0L;
+float countsFromTargetCurrent0Float = 0.0;
+float countsPerMilliOutput0Float = 0.0;
+long countsToDestination0Long = 0L;
+long countsToDestinationAbs0Long = 0L;
+float countTarget0Float = 0.0;
+int directionChangeSign0Int = 1;
+int directionSign0Int = 1;
+int directionSign1Int = 1;
+long loopStartMillis0Long = 0L;
+long loopStartMillisElapsed0Long = 0L;
+long motor1Throttle0Long = 0L;
+long motor1Throttle1Long = 0L;
+long motor1Throttle2Long = 0L;
+long motor1ThrottleAverage0Long = 0L;
+long motor1ThrottleAverageAbs0Long = 0L;
+long moveStartMillis0Long = 0L;
+long moveStartMillisElapsed0Long = 0L;
+long phaseAccelEndMillis0Long = 0L;
+long phaseConstEndMillis0Long = 0L;
+long phaseConstMillisElapsed0Long = 0L;
+long phaseDecelEndMillis0Long = 0L;
+long phaseDecelMillisElapsed0Long = 0L;
+float revsPerSecondTemp0Float = 0.0;
+float speedTarget0Float = 0.0;
+long tAccelExit0Long = 0L;
+long tAtXHalfway0Long = 0L;
+long tAtVMax0Long = 0L;
+long tAtVMin0Long = 0L;
+long tConstExit0Long = 0L;
+long tDecelExit0Long = 0L;
+float vAccelExit0Float = 0.0;
+float vAtXHalfway0Float = 0.0;
+float vConstExit0Float = 0.0;
+float vDecelExit0Float = 0.0;
+float vInitial0Float = 0.0;
+float vMax0Float = 0.0;
+float vMin0Float = 0.0;
+float xAccelExit0Float = 0.0;
+float xAtVMax0Float = 0.0;
+float xAtVMin0Float = 0.0;
+float xConstDistance0Float = 0.0;
+float xConstExit0Float = 0.0;
+float xDecelExit0Float = 0.0;
+float xDestination0Float = 0.0;
+float xHalfway0Float = 0.0;
+float xTarget0Float = 0.0;
+
+//constant calcs, stage 1
+float inchesPerRev0Float = (winchDiameterFloat * 3.1416); //circumference of the winch
+
+//constant calcs, stage 2
+float inchesOfTravelPerRev0Float = inchesPerRev0Float / float(pulleyDividerByte); //inches of actual travel per winch rev
+
+//temp
+long cancelLoopIterationsLong = 0L;
+long loopStartIterationsLong = 0L;
+
+Encoder enc1(enc1PinAByte, enc1PinBByte); //define encoder 1
+
+void setup()
+{
+  Serial.begin(115200); //init serial comms
+  Serial.setTimeout(5); //hmm...
+  pinMode(motor1DirectionPinByte, OUTPUT); //init dir pin
+}
+
+void loop()
+{
+  if (Serial.available() > 1) //why > 1? dunno, but it works.
+  {
+    countDestination0Long = Serial.parseInt(); //store the serial data as the destination
+    updateOnNewDestination();
+
+    moveToDestination();
+  }
+  //analogWrite(motor1PWMPinByte, 0); //set throttle to zero
+}
+
+float convertInchesOfTravelPerSecondToCountsPerMilli(float inchesOfTravelPerSecondInputFloat)
+{
+  revsPerSecondTemp0Float = inchesOfTravelPerSecondInputFloat / inchesOfTravelPerRev0Float; //max revs per second
+  countsPerMilliOutput0Float = (revsPerSecondTemp0Float * float(countsPerRevLong)) / 1000.0; // max counts per milli
+  return countsPerMilliOutput0Float;
+}
+
+void moveToDestination()
+{
+  while (cancelLoop0Boolean == false) //repeat move loop as long as exit condition is false
+  {
+    if (Serial.available() > 1) //if there's new serial data, then
+    {
+      countDestination0Long = Serial.parseInt(); //store the serial data as the destination
+      updateOnNewDestination();
+    }
+
+    loopStartMillisElapsed0Long = millis() - loopStartMillis0Long; //update the millis elapsed between loop starts
+
+    if (loopStartMillisElapsed0Long < 5L) //if not enough millis have elapsed since the last loop ran, then
+    {
+      delay(5); //just so it's not looping full speed
+    }
+
+    else //if enough millis have elapsed to start another cycle, then
+    {
+      countCurrent0Long = enc1.read(); //update the current count
+      loopStartMillis0Long = millis(); //restart the loop timer
+      moveStartMillisElapsed0Long = loopStartMillis0Long - moveStartMillis0Long; //update the start timer
+
+      if (countsToDestination0Long == 0) //if it's at the destination, then
+      {
+        analogWrite(motor1PWMPinByte, 0); //set throttle
+      }
+
+      else //if it's not at the destination
+      {
+        updateCountAndSpeedTargets();
+        countsFromTargetCurrent0Float = countTarget0Float - float(countCurrent0Long); //update the current counts from target
+        motor1Throttle2Long = motor1Throttle1Long; //update previous before current
+        motor1Throttle1Long = motor1Throttle0Long; //update previous before current
+        motor1Throttle0Long = long((float(throttleMaxLong) * countsFromTargetCurrent0Float) / float(countsUntilMaxThrottleLong)); //update motor throttle based on distance to target count
+        motor1Throttle0Long = constrain(motor1Throttle0Long, -throttleMaxLong, throttleMaxLong); //constrain to max throttle
+//        motor1ThrottleAverage0Long = ((3L * motor1Throttle0Long) + (2L * motor1Throttle1Long) + (1L * motor1Throttle2Long)) / 6L;
+        motor1ThrottleAverage0Long = motor1Throttle0Long;
+
+        if (motor1ThrottleAverage0Long == 0) //if the throttle is zero, then
+        {
+          motor1ThrottleAverageAbs0Long = 0;
+        }
+
+        else if (motor1ThrottleAverage0Long > 0) //if throttle is positive, then
+        {
+          digitalWrite(motor1DirectionPinByte, LOW);
+          motor1ThrottleAverageAbs0Long = max(motor1ThrottleAverage0Long, throttleMinLong); //no lower than the minimum
+        }
+        
+        else //if the throttle is negative, then
+        {
+          digitalWrite(motor1DirectionPinByte, HIGH);
+          motor1ThrottleAverageAbs0Long = abs(motor1ThrottleAverage0Long); //update absolute value
+          motor1ThrottleAverageAbs0Long = max(motor1ThrottleAverageAbs0Long, throttleMinLong); //no lower than the minimum
+        }
+        analogWrite(motor1PWMPinByte, motor1ThrottleAverageAbs0Long); //set throttle
+      }
+    }
+  }
+}
+
+void updateCountAndSpeedTargets()
+{
+  if (moveStartMillisElapsed0Long < phaseDecelEndMillis0Long) //if it's in movement phase, then
+  {
+    if (moveStartMillisElapsed0Long < phaseAccelEndMillis0Long) //if it's in acceleration phase, then
+    {
+      xTarget0Float = (vInitial0Float * float(moveStartMillisElapsed0Long)) + (0.5 * accelerationSettingFloat * pow(float(moveStartMillisElapsed0Long), 2.0)); //update the target x
+      countTarget0Float = float(countInitial0Long) + (float(directionSign0Int) * xTarget0Float); //update target count, with appropriate sign
+      speedTarget0Float = vInitial0Float + (accelerationSettingFloat * float(moveStartMillisElapsed0Long)); //update target speed
+    }
+    else if (moveStartMillisElapsed0Long < phaseConstEndMillis0Long) //if it's in constant phase, then
+    {
+      phaseConstMillisElapsed0Long = moveStartMillisElapsed0Long - phaseAccelEndMillis0Long; //update the constant phase timer
+      xTarget0Float = vMax0Float * float(phaseConstMillisElapsed0Long); //update the target x
+      countTarget0Float = float(countInitial0Long) + (float(directionSign0Int) * (xAccelExit0Float + xTarget0Float)); //update the target count, with appropriate sign
+      speedTarget0Float = vMax0Float; //update target speed
+    }
+    else //if it's in the deceleration phase, then
+    {
+      phaseDecelMillisElapsed0Long = moveStartMillisElapsed0Long - phaseConstEndMillis0Long; //update the decel phase timer
+      xTarget0Float = (vAccelExit0Float * float(phaseDecelMillisElapsed0Long)) - (0.5 * accelerationSettingFloat * pow(float(phaseDecelMillisElapsed0Long), 2.0)); //update the target x
+      countTarget0Float = float(countInitial0Long) + (float(directionSign0Int) * (xAccelExit0Float + xConstExit0Float + xTarget0Float)); //update the target count, with appropriate sign
+      speedTarget0Float = vAccelExit0Float - (accelerationSettingFloat * float(phaseDecelMillisElapsed0Long)); //update target speed
+    }
+  }
+  else //if it's in holding phase, then
+  {
+    countTarget0Float = float(countDestination0Long); //target is destination
+    speedTarget0Float = 0.0; //update target speed
+  }
+}
+
+void updateOnNewDestination()
+{
+  moveStartMillis0Long = millis(); //restart the movement timer
+  loopStartMillis0Long = moveStartMillis0Long; //restart the loop timer
+  
+  countCurrent0Long = enc1.read(); //update the current count
+  countInitial0Long = countCurrent0Long; //update the initial count
+  countsToDestination0Long = countDestination0Long - countCurrent0Long; //update the counts to destination
+  countsToDestinationAbs0Long = abs(countsToDestination0Long); //update the absolute value
+  
+  directionSign1Int = directionSign0Int; //update previous before current
+  directionSign0Int = countsToDestination0Long / countsToDestinationAbs0Long; //update current direction sign
+  directionChangeSign0Int = directionSign0Int / directionSign1Int; //positive if direction to destination is the same as before; negative otherwise
+
+  updatePhaseEndMillis();
+
+  cancelLoop0Boolean = false; // initialize the loop exit condition
+}
+
+void updatePhaseAccelStuff()
+{
+  tAtVMax0Long = long((vMax0Float - vInitial0Float) / accelerationSettingFloat); //update the internal millis at max speed
+  xAtVMax0Float = (vInitial0Float * float(tAtVMax0Long)) + (0.5 * accelerationSettingFloat * float(pow(tAtVMax0Long, 2))); //update the internal count at max speed
+  if (xAtVMax0Float < xHalfway0Float) //if it reaches max speed before the halfway point, then
+  {
+    tAccelExit0Long = tAtVMax0Long; //set accel phase exit millis to whenever it reached max speed
+    xAccelExit0Float = xAtVMax0Float; //set accel phase exit count to wherever it was when it reached max speed
+    vAccelExit0Float = vMax0Float; //set accel phase exit speed to the max speed
+  }
+  else //if it doesn't reach max speed before the halfway point, then
+  {
+    float quadraticA0Float = 0.5 * accelerationSettingFloat; //update the a term
+    float quadraticB0Float = vInitial0Float; //b term
+    float quadraticC0Float = -1.0 * xHalfway0Float; //c term
+    float quadraticBSquared0Float = quadraticB0Float * quadraticB0Float; //b squared term
+    float quadratic4AC0Float = 4.0 * quadraticA0Float * quadraticC0Float; //4AC term
+    float quadraticInsideRoot0Float = quadraticBSquared0Float - quadratic4AC0Float; //stuff in the root
+    float quadraticRoot0Float = pow(quadraticInsideRoot0Float, 0.5); //square root term
+    float quadraticNumerator0Float = (-1.0 * quadraticB0Float) + quadraticRoot0Float; //numerator
+    float quadraticDenominator0Float = 2.0 * quadraticA0Float; //denominator
+    float quadraticSolution0Float = quadraticNumerator0Float / quadraticDenominator0Float; //solution
+    
+    tAtXHalfway0Long = long(quadraticSolution0Float); //update millis at halfway point
+    vAtXHalfway0Float = vInitial0Float + (accelerationSettingFloat * float(tAtXHalfway0Long)); //update the speed at halfway point
+
+    tAccelExit0Long = tAtXHalfway0Long; //set accel phase exit millis to whenever it reached the halfway point
+    xAccelExit0Float = xHalfway0Float; //set accel phase exit count to the internal halfway point
+    vAccelExit0Float = vAtXHalfway0Float; //set accel phase exit speed to the speed at the halfway point
+  }
+}
+
+void updatePhaseConstStuff()
+{
+  xConstDistance0Float = xDestination0Float - xAccelExit0Float - xDecelExit0Float; //update the x distance at constant speed
+  
+  if (xConstDistance0Float <= 0.0) //if there's no constant phase, then
+  {
+    tConstExit0Long = 0L; //set the constant phase exit millis to zero
+    xConstExit0Float = 0.0; //set the constant phase exit count to zero
+    vConstExit0Float = vAccelExit0Float; //set the constant phase exit speed to the accel phase exit speed
+  }
+  else //if there is a constant phase, then
+  {
+    tConstExit0Long = long(xConstDistance0Float / vMax0Float); //set the constant phase exit millis to however long it takes at max speed
+    xConstExit0Float = xConstDistance0Float; //set the constant phase exit counts to the distance it had to travel
+    vConstExit0Float = vMax0Float; //set the constant phase exit speed to the max
+  }
+}
+
+void updatePhaseDecelStuff()
+{
+  tAtVMin0Long = long((vAccelExit0Float - vMin0Float) / accelerationSettingFloat); //when does it reach minimum speed?
+  xAtVMin0Float = (vAccelExit0Float * float(tAtVMin0Long) - (0.5 * accelerationSettingFloat * float(pow(tAtVMin0Long, 2.0)))); //where is it when it reaches minimum speed?
+  
+  tDecelExit0Long = tAtVMin0Long; //set decel phase exit millis to whenever it reaches minimum speed
+  xDecelExit0Float = xAtVMin0Float; //set decel phase exit count to wherever it was when it reached minimum speed
+  vDecelExit0Float = vMin0Float; //set the decel phase exit speed to the minimum
+}
+
+void updatePhaseEndMillis()
+{
+  vInitial0Float = float(directionChangeSign0Int) * speedTarget0Float; //set initial speed to whatever the last speed was, negative if direction changed
+  xDestination0Float = float(countsToDestinationAbs0Long); //update the internal destination x
+  xHalfway0Float = xDestination0Float / 2.0; //update the internal halfway point
+  vMax0Float = convertInchesOfTravelPerSecondToCountsPerMilli(inchesOfTravelPerSecondMaxFloat);
+  vMin0Float = convertInchesOfTravelPerSecondToCountsPerMilli(inchesOfTravelPerSecondMinFloat);
+  
+  updatePhaseAccelStuff();
+  updatePhaseDecelStuff();
+  updatePhaseConstStuff();
+
+  phaseAccelEndMillis0Long = tAccelExit0Long; //update the accel end real millis
+  phaseConstEndMillis0Long = phaseAccelEndMillis0Long + tConstExit0Long; //update the constant phase end real millis
+  phaseDecelEndMillis0Long = phaseConstEndMillis0Long + tDecelExit0Long; //update the decel phase real end millis
+}
